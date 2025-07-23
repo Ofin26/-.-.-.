@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FPS Shooter с рыбалкой</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: Arial, sans-serif;
+        }
+        canvas { 
+            display: block; 
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+            top: 0;
+        }
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            left: 0;
+            top: 9px;
+        }
+        #fishing-ui {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div>Патроны: ∞</div>
+        <div>Рыба: <span id="fish-count">0</span></div>
+        <div>Режим: <span id="mode">Стрельба</span></div>
+    </div>
+    <div id="crosshair"></div>
+    <div id="fishing-ui">
+        <div id="fishing-message">Нажмите, когда рыба клюнет!</div>
+        <div id="fishing-progress"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/PointerLockControls.js"></script>
+    <script>
+        // Инициализация сцены, камеры и рендерера
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Голубое небо
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Освещение
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        // Управление с помощью указателя
+        const controls = new THREE.PointerLockControls(camera, document.body);
+        
+        // Пол и стены
+        const floorGeometry = new THREE.PlaneGeometry(100, 100);
+        const floorMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x3a5f0b,
+            roughness: 0.8
+        });
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
+
+        // Вода для рыбалки
+        const waterGeometry = new THREE.PlaneGeometry(20, 20);
+        const waterMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x1E90FF,
+            transparent: true,
+            opacity: 0.7,
+            roughness: 0.1,
+            metalness: 0.5
+        });
+        const water = new THREE.Mesh(waterGeometry, waterMaterial);
+        water.rotation.x = -Math.PI / 2;
+        water.position.set(15, 0.01, 15);
+        scene.add(water);
+
+        // Стены
+        function createWall(x, y, z, width, height, rotation) {
+            const wallGeometry = new THREE.BoxGeometry(width, height, 0.2);
+            const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+            wall.position.set(x, y, z);
+            if (rotation) wall.rotation.y = rotation;
+            scene.add(wall);
+            return wall;
+        }
+
+        createWall(0, 5, -50, 100, 10);
+        createWall(-50, 5, 0, 100, 10, Math.PI/2);
+        createWall(50, 5, 0, 100, 10, Math.PI/2);
+        createWall(0, 5, 50, 100, 10);
+
+        // Мишени
+        const targets = [];
+        for (let i = 0; i < 5; i++) {
+            const targetGeometry = new THREE.BoxGeometry(2, 2, 0.2);
+            const targetMaterial = new THREE.MeshStandardMaterial({ 
+                color: Math.random() * 0xffffff,
+                emissive: 0x222222
+            });
+            const target = new THREE.Mesh(targetGeometry, targetMaterial);
+            target.position.set(
+                Math.random() * 80 - 40,
+                2,
+                Math.random() * 80 - 40
+            );
+            target.lookAt(camera.position);
+            scene.add(target);
+            targets.push(target);
+        }
+
+        // Озеро с рыбой
+        const fishPond = {
+            geometry: new THREE.SphereGeometry(10, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+            material: new THREE.MeshStandardMaterial({
+                color: 0x1E90FF,
+                transparent: true,
+                opacity: 0.7,
+                side: THREE.DoubleSide
+            }),
+            mesh: null,
+            fishes: []
+        };
+
+        fishPond.mesh = new THREE.Mesh(fishPond.geometry, fishPond.material);
+        fishPond.mesh.rotation.x = Math.PI;
+        fishPond.mesh.position.set(15, -10, 15);
+        scene.add(fishPond.mesh);
+
+        // Создание рыбок
+        function createFish() {
+            const fishGeometry = new THREE.ConeGeometry(0.3, 1, 4);
+            fishGeometry.rotateX(Math.PI / 2);
+            const fishMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xFF6347,
+                flatShading: true
+            });
+            const fish = new THREE.Mesh(fishGeometry, fishMaterial);
+            
+            // Позиция внутри озера
+            const angle = Math.random() * Math.PI * 2;
+            const radius = Math.random() * 8 + 2;
+            fish.position.set(
+                15 + Math.cos(angle) * radius,
+                -Math.random() * 5,
+                15 + Math.sin(angle) * radius
+            );
+            
+            fish.userData = {
+                speed: Math.random() * 0.02 + 0.01,
+                direction: angle,
+                isCaught: false
+            };
+            
+            scene.add(fish);
+            fishPond.fishes.push(fish);
+            return fish;
+        }
+
+        // Создаем несколько рыбок
+        for (let i = 0; i < 10; i++) {
+            createFish();
+        }
+
+        // Пули
+        const bullets = [];
+        const bulletGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+        const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFF00 });
+
+        // Переменные игры
+        let fishCaught = 0;
+        let isFishing = false;
+        let fishingStartTime = 0;
+        let fishingSuccess = false;
+        let currentMode = 'shooting'; // 'shooting' или 'fishing'
+
+        // Обработчики событий
+        document.addEventListener('click', () => {
+            if (!controls.isLocked) {
+                controls.lock();
+                return;
+            }
+
+            if (currentMode === 'shooting') {
+                shoot();
+            } else if (currentMode === 'fishing' && !isFishing) {
+                startFishing();
+            } else if (isFishing && fishingSuccess) {
+                catchFish();
+            }
+        }, false);
+
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'KeyF') {
+                toggleMode();
+            }
+        });
+
+        function toggleMode() {
+            if (currentMode === 'shooting') {
+                currentMode = 'fishing';
+                document.getElementById('mode').textContent = 'Рыбалка';
+            } else {
+                currentMode = 'shooting';
+                document.getElementById('mode').textContent = 'Стрельба';
+                if (isFishing) {
+                    cancelFishing();
+                }
+            }
+        }
+
+        function shoot() {
+            const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+            
+            // Начальная позиция пули - перед камерой
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            bullet.position.copy(camera.position).add(direction.multiplyScalar(1));
+            
+            // Направление пули
+            bullet.userData = {
+                velocity: camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(50),
+                timeToLive: 2.0
+            };
+            
+            scene.add(bullet);
+            bullets.push(bullet);
+            
+            // Проверка попадания
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(), camera);
+            const intersects = raycaster.intersectObjects(targets);
+            
+            if (intersects.length > 0) {
+                const target = intersects[0].object;
+                target.material.color.setHex(Math.random() * 0xffffff);
+                target.position.set(
+                    Math.random() * 80 - 40,
+                    2,
+                    Math.random() * 80 - 40
+                );
+                target.lookAt(camera.position);
+            }
+        }
+
+        function startFishing() {
+            // Проверяем, смотрим ли мы на воду
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(), camera);
+            const intersects = raycaster.intersectObject(water);
+            
+            if (intersects.length > 0) {
+                isFishing = true;
+                fishingStartTime = Date.now();
+                fishingSuccess = false;
+                
+                // Показать UI рыбалки
+                document.getElementById('fishing-ui').style.display = 'block';
+                document.getElementById('fishing-message').textContent = 'Ожидайте поклевки...';
+                
+                // Случайное время до поклевки (2-5 секунд)
+                setTimeout(() => {
+                    if (isFishing) {
+                        fishingSuccess = true;
+                        document.getElementById('fishing-message').textContent = 'КЛЕВ! Нажмите чтобы подсечь!';
+                    }
+                }, 2000 + Math.random() * 3000);
+            }
+        }
+
+        function catchFish() {
+            fishCaught++;
+            document.getElementById('fish-count').textContent = fishCaught;
+            cancelFishing();
+            
+            // Создаем новую рыбку
+            createFish();
+        }
+
+        function cancelFishing() {
+            isFishing = false;
+            fishingSuccess = false;
+            document.getElementById('fishing-ui').style.display = 'none';
+        }
+
+        // Анимация
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Обновление пуль
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(0.016)); // 0.016 - примерное время кадра
+                bullet.userData.timeToLive -= 0.016;
+                
+                if (bullet.userData.timeToLive <= 0) {
+                    scene.remove(bullet);
+                    bullets.splice(i, 1);
+                }
+            }
+            
+            // Анимация рыбок
+            fishPond.fishes.forEach(fish => {
+                if (fish.userData.isCaught) return;
+                
+                // Обновляем позицию рыбы
+                fish.position.x += Math.cos(fish.userData.direction) * fish.userData.speed;
+                fish.position.z += Math.sin(fish.userData.direction) * fish.userData.speed;
+                
+                // Проверяем границы озера
+                const dx = fish.position.x - 15;
+                const dz = fish.position.z - 15;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                
+                if (distance > 10) {
+                    // Рыба достигла края - меняем направление
+                    fish.userData.direction = Math.atan2(-dz, -dx) + (Math.random() - 0.5) * Math.PI/2;
+                }
+                
+                // Случайное изменение направления
+                if (Math.random() < 0.02) {
+                    fish.userData.direction += (Math.random() - 0.5) * Math.PI/4;
+                }
+                
+                // Поворачиваем рыбу в направлении движения
+                fish.rotation.y = -fish.userData.direction + Math.PI/2;
+            });
+            
+            // Обновление UI рыбалки
+            if (isFishing) {
+                const progress = (Date.now() - fishingStartTime) / 5000;
+                document.getElementById('fishing-progress').textContent = 
+                    'Ожидание: ' + Math.min(100, Math.floor(progress * 100)) + '%';
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        // Обработка изменения размера окна
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
