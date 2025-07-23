@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mario-Style Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #87CEEB;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #game-canvas {
+            display: block;
+            background-color: #87CEEB;
+        }
+        #score-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #start-screen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        #start-button {
+            padding: 15px 30px;
+            font-size: 24px;
+            background-color: #FF5252;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #start-button:hover {
+            background-color: #FF0000;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+        <div id="score-display">Score: 0 | Level: 1</div>
+        <div id="start-screen">
+            <h1>Mario Adventure</h1>
+            <button id="start-button">Start Game</button>
+        </div>
+    </div>
+
+    <script>
+        // Game variables
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score-display');
+        const startScreen = document.getElementById('start-screen');
+        const startButton = document.getElementById('start-button');
+
+        // Set canvas size
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Game state
+        let gameRunning = false;
+        let score = 0;
+        let level = 1;
+        let gameSpeed = 3;
+        let gravity = 0.5;
+        let cameraOffset = 0;
+        let lastPlatformX = 0;
+        let enemies = [];
+        let platforms = [];
+        let coins = [];
+        let powerUps = [];
+
+        // Player object
+        const player = {
+            x: 100,
+            y: canvas.height - 150,
+            width: 40,
+            height: 60,
+            velocityX: 0,
+            velocityY: 0,
+            speed: 5,
+            jumpForce: -12,
+            isJumping: false,
+            isInvincible: false,
+            invincibleTimer: 0,
+            lives: 3,
+            score: 0,
+            draw() {
+                ctx.fillStyle = this.isInvincible ? 'rgba(255, 0, 0, 0.5)' : '#FF0000';
+                ctx.fillRect(this.x - cameraOffset, this.y, this.width, this.height);
+                
+                // Draw eyes
+                ctx.fillStyle = 'white';
+                ctx.fillRect(this.x - cameraOffset + 10, this.y + 10, 10, 10);
+                ctx.fillRect(this.x - cameraOffset + 25, this.y + 10, 10, 10);
+                
+                // Draw mustache
+                ctx.fillStyle = 'black';
+                ctx.fillRect(this.x - cameraOffset + 10, this.y + 30, 25, 5);
+            },
+            update() {
+                // Apply gravity
+                this.velocityY += gravity;
+                
+                // Update position
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                
+                // Keep player on screen (left edge)
+                if (this.x < cameraOffset + 50) {
+                    this.x = cameraOffset + 50;
+                }
+                
+                // Check for ground collision
+                if (this.y + this.height > canvas.height) {
+                    this.y = canvas.height - this.height;
+                    this.velocityY = 0;
+                    this.isJumping = false;
+                }
+                
+                // Check platform collisions
+                let onPlatform = false;
+                for (const platform of platforms) {
+                    if (this.x + this.width > platform.x && 
+                        this.x < platform.x + platform.width &&
+                        this.y + this.height >= platform.y && 
+                        this.y + this.height <= platform.y + 20 &&
+                        this.velocityY > 0) {
+                        
+                        this.y = platform.y - this.height;
+                        this.velocityY = 0;
+                        this.isJumping = false;
+                        onPlatform = true;
+                    }
+                }
+                
+                // Update invincibility timer
+                if (this.isInvincible) {
+                    this.invincibleTimer--;
+                    if (this.invincibleTimer <= 0) {
+                        this.isInvincible = false;
+                    }
+                }
+                
+                // Check if player falls off the world
+                if (this.y > canvas.height) {
+                    this.lives--;
+                    if (this.lives <= 0) {
+                        gameOver();
+                    } else {
+                        resetPlayer();
+                    }
+                }
+            },
+            jump() {
+                if (!this.isJumping) {
+                    this.velocityY = this.jumpForce;
+                    this.isJumping = true;
+                }
+            },
+            takeDamage() {
+                if (!this.isInvincible) {
+                    this.lives--;
+                    this.isInvincible = true;
+                    this.invincibleTimer = 60; // 1 second of invincibility
+                    
+                    // Knockback effect
+                    this.velocityY = -10;
+                    this.velocityX = -5;
+                    
+                    if (this.lives <= 0) {
+                        gameOver();
+                    }
+                }
+            }
+        };
+
+        // Platform class
+        class Platform {
+            constructor(x, y, width, isBreakable = false) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.isBreakable = isBreakable;
+            }
+            
+            draw() {
+                ctx.fillStyle = this.isBreakable ? '#8B4513' : '#008000';
+                ctx.fillRect(this.x - cameraOffset, this.y, this.width, 20);
+            }
+        }
+
+        // Enemy class
+        class Enemy {
+            constructor(x, y, type = 'goomba') {
+                this.x = x;
+                this.y = y;
+                this.width = 40;
+                this.height = 40;
+                this.type = type;
+                this.velocityX = type === 'goomba' ? -1 : -2;
+                this.velocityY = 0;
+                this.health = type === 'goomba' ? 1 : 2;
+                this.isAlive = true;
+            }
+            
+            draw() {
+                if (!this.isAlive) return;
+                
+                if (this.type === 'goomba') {
+                    ctx.fillStyle = '#8B4513';
+                    ctx.fillRect(this.x - cameraOffset, this.y, this.width, this.height);
+                    
+                    // Draw eyes
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(this.x - cameraOffset + 10, this.y + 10, 8, 8);
+                    ctx.fillRect(this.x - cameraOffset + 25, this.y + 10, 8, 8);
+                } else { // koopa
+                    ctx.fillStyle = '#008000';
+                    ctx.fillRect(this.x - cameraOffset, this.y, this.width, this.height);
+                    
+                    // Draw shell
+                    ctx.fillStyle = '#00AA00';
+                    ctx.beginPath();
+                    ctx.arc(this.x - cameraOffset + this.width/2, this.y + this.height/2, this.width/2, 0, Math.PI);
+                    ctx.fill();
+                }
+            }
+            
+            update() {
+                if (!this.isAlive) return;
+                
+                // Apply gravity
+                this.velocityY += gravity;
+                
+                // Update position
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                
+                // Check for ground collision
+                if (this.y + this.height > canvas.height) {
+                    this.y = canvas.height - this.height;
+                    this.velocityY = 0;
+                }
+                
+                // Check platform collisions
+                for (const platform of platforms) {
+                    if (this.x + this.width > platform.x && 
+                        this.x < platform.x + platform.width &&
+                        this.y + this.height >= platform.y && 
+                        this.y + this.height <= platform.y + 20 &&
+                        this.velocityY > 0) {
+                        
+                        this.y = platform.y - this.height;
+                        this.velocityY = 0;
+                    }
+                }
+                
+                // Check if enemy is off screen
+                if (this.x + this.width < cameraOffset) {
+                    this.isAlive = false;
+                }
+                
+                // Check collision with player
+                if (this.isAlive && 
+                    player.x + player.width > this.x && 
+                    player.x < this.x + this.width &&
+                    player.y + player.height > this.y && 
+                    player.y < this.y + this.height) {
+                    
+                    // Player jumps on enemy
+                    if (player.velocityY > 0 && player.y + player.height < this.y + this.height/2) {
+                        this.takeDamage();
+                        player.velocityY = player.jumpForce * 0.7; // small bounce
+                        score += this.type === 'goomba' ? 100 : 200;
+                        updateScore();
+                    } else if (!player.isInvincible) {
+                        player.takeDamage();
+                    }
+                }
+            }
+            
+            takeDamage() {
+                this.health--;
+                if (this.health <= 0) {
+                    this.isAlive = false;
+                }
+            }
+        }
+
+        // Coin class
+        class Coin {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 20;
+                this.height = 20;
+                this.collected = false;
+                this.animationFrame = 0;
+            }
+            
+            draw() {
+                if (this.collected) return;
+                
+                ctx.fillStyle = '#FFD700';
+                ctx.beginPath();
+                ctx.arc(this.x - cameraOffset + this.width/2, this.y + this.height/2, this.width/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Shine effect
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.beginPath();
+                ctx.arc(
+                    this.x - cameraOffset + this.width/2 + Math.cos(this.animationFrame * 0.2) * 5,
+                    this.y + this.height/2 + Math.sin(this.animationFrame * 0.2) * 5,
+                    3, 0, Math.PI * 2
+                );
+                ctx.fill();
+                
+                this.animationFrame++;
+            }
+            
+            checkCollision() {
+                if (this.collected) return false;
+                
+                if (player.x + player.width > this.x && 
+                    player.x < this.x + this.width &&
+                    player.y + player.height > this.y && 
+                    player.y < this.y + this.height) {
+                    
+                    this.collected = true;
+                    score += 50;
+                    updateScore();
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        // Power-up class
+        class PowerUp {
+            constructor(x, y, type = 'mushroom') {
+                this.x = x;
+                this.y = y;
+                this.width = 30;
+                this.height = 30;
+                this.type = type;
+                this.velocityX = 0;
+                this.velocityY = 0;
+                this.collected = false;
+                this.direction = Math.random() > 0.5 ? 1 : -1;
+            }
+            
+            draw() {
+                if (this.collected) return;
+                
+                if (this.type === 'mushroom') {
+                    // Mushroom stem
+                    ctx.fillStyle = '#F5F5DC';
+                    ctx.fillRect(this.x - cameraOffset + 5, this.y + 10, 20, 15);
+                    
+                    // Mushroom cap
+                    ctx.fillStyle = '#FF0000';
+                    ctx.beginPath();
+                    ctx.arc(this.x - cameraOffset + this.width/2, this.y + 10, 15, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Spots
+                    ctx.fillStyle = 'white';
+                    ctx.beginPath();
+                    ctx.arc(this.x - cameraOffset + 10, this.y + 5, 3, 0, Math.PI * 2);
+                    ctx.arc(this.x - cameraOffset + 20, this.y + 8, 2, 0, Math.PI * 2);
+                    ctx.arc(this.x - cameraOffset + 15, this.y + 15, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (this.type === 'star') {
+                    // Star
+                    ctx.fillStyle = '#FFFF00';
+                    drawStar(this.x - cameraOffset + this.width/2, this.y + this.height/2, 5, 15, 8);
+                }
+            }
+            
+            update() {
+                if (this.collected) return;
+                
+                // Apply gravity
+                this.velocityY += gravity;
+                
+                // Move sideways
+                this.velocityX = this.direction * 2;
+                
+                // Update position
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+                
+                // Check for ground collision
+                if (this.y + this.height > canvas.height) {
+                    this.y = canvas.height - this.height;
+                    this.velocityY = 0;
+                }
+                
+                // Check platform collisions
+                for (const platform of platforms) {
+                    if (this.x + this.width > platform.x && 
+                        this.x < platform.x + platform.width &&
+                        this.y + this.height >= platform.y && 
+                        this.y + this.height <= platform.y + 20 &&
+                        this.velocityY > 0) {
+                        
+                        this.y = platform.y - this.height;
+                        this.velocityY = 0;
+                    }
+                    
+                    // Bounce off walls
+                    if (this.x < platform.x + platform.width && 
+                        this.x + this.width > platform.x &&
+                        ((this.y > platform.y && this.y < platform.y + 20) || 
+                         (this.y + this.height > platform.y && this.y + this.height < platform.y + 20))) {
+                        
+                        this.direction *= -1;
+                    }
+                }
+                
+                // Check collision with player
+                if (player.x + player.width > this.x && 
+                    player.x < this.x + this.width &&
+                    player.y + player.height > this.y && 
+                    player.y < this.y + this.height) {
+                    
+                    this.collected = true;
+                    if (this.type === 'mushroom') {
+                        player.lives++;
+                        score += 500;
+                    } else if (this.type === 'star') {
+                        player.isInvincible = true;
+                        player.invincibleTimer = 300; // 5 seconds of invincibility
+                        score += 1000;
+                    }
+                    updateScore();
+                }
+                
+                // Check if power-up is off screen
+                if (this.x + this.width < cameraOffset) {
+                    this.collected = true;
+                }
+            }
+        }
+
+        // Helper function to draw a star
+        function drawStar(cx, cy, spikes, outerRadius, innerRadius) {
+            let rot = Math.PI/2 * 3;
+            let x = cx;
+            let y = cy;
+            let step = Math.PI / spikes;
+
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - outerRadius);
+            
+            for (let i = 0; i < spikes; i++) {
+                x = cx + Math.cos(rot) * outerRadius;
+                y = cy + Math.sin(rot) * outerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+
+                x = cx + Math.cos(rot) * innerRadius;
+                y = cy + Math.sin(rot) * innerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+            }
+            
+            ctx.lineTo(cx, cy - outerRadius);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Generate initial level
+        function generateLevel() {
+            platforms = [];
+            enemies = [];
+            coins = [];
+            powerUps = [];
+            
+            // Ground platform
+            platforms.push(new Platform(0, canvas.height - 40, canvas.width * 3));
+            
+            // Generate random platforms
+            const platformCount = 10 + Math.floor(Math.random() * 10);
+            lastPlatformX = 0;
+            
+            for (let i = 0; i < platformCount; i++) {
+                const width = 80 + Math.random() * 120;
+                const x = lastPlatformX + 200 + Math.random() * 300;
+                const y = canvas.height - 150 - Math.random() * 300;
+                
+                platforms.push(new Platform(x, y, width));
+                
+                // Add enemies on some platforms
+                if (Math.random() > 0.5) {
+                    const enemyType = Math.random() > 0.7 ? 'koopa' : 'goomba';
+                    enemies.push(new Enemy(x + width/2, y - 40, enemyType));
+                }
+                
+                // Add coins on some platforms
+                if (Math.random() > 0.3) {
+                    const coinCount = 3 + Math.floor(Math.random() * 3);
+                    for (let j = 0; j < coinCount; j++) {
+                        coins.push(new Coin(x + j * 25 + 10, y - 30));
+                    }
+                }
+                
+                // Occasionally add a power-up
+                if (Math.random() > 0.8) {
+                    const powerUpType = Math.random() > 0.5 ? 'mushroom' : 'star';
+                    powerUps.push(new PowerUp(x + width/2 - 15, y - 60, powerUpType));
+                }
+                
+                lastPlatformX = x;
+            }
+        }
+
+        // Update score display
+        function updateScore() {
+            scoreDisplay.textContent = `Score: ${score} | Level: ${level} | Lives: ${player.lives}`;
+        }
+
+        // Reset player position
+        function resetPlayer() {
+            player.x = cameraOffset + 100;
+            player.y = canvas.height - 150;
+            player.velocityX = 0;
+            player.velocityY = 0;
+            player.isJumping = false;
+        }
+
+        // Game over function
+        function gameOver() {
+            gameRunning = false;
+            startScreen.style.display = 'flex';
+            startButton.textContent = 'Game Over - Play Again';
+        }
+
+        // Start game function
+        function startGame() {
+            gameRunning = true;
+            score = 0;
+            level = 1;
+            player.lives = 3;
+            cameraOffset = 0;
+            startScreen.style.display = 'none';
+            
+            generateLevel();
+            resetPlayer();
+            updateScore();
+            
+            // Start game loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Game loop
+        function gameLoop() {
+            if (!gameRunning) return;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Update player
+            player.update();
+            
+            // Update camera
+            if (player.x > canvas.width / 2) {
+                cameraOffset = player.x - canvas.width / 2;
+            }
+            
+            // Check if we need to generate more level
+            if (player.x > lastPlatformX - canvas.width) {
+                level++;
+                generateLevel();
+                updateScore();
+            }
+            
+            // Draw and update platforms
+            for (const platform of platforms) {
+                platform.draw();
+            }
+            
+            // Draw and update coins
+            for (const coin of coins) {
+                coin.draw();
+                coin.checkCollision();
+            }
+            
+            // Remove collected coins
+            coins = coins.filter(coin => !coin.collected);
+            
+            // Draw and update power-ups
+            for (const powerUp of powerUps) {
+                powerUp.draw();
+                powerUp.update();
+            }
+            
+            // Remove collected power-ups
+            powerUps = powerUps.filter(powerUp => !powerUp.collected);
+            
+            // Draw and update enemies
+            for (const enemy of enemies) {
+                enemy.draw();
+                enemy.update();
+            }
+            
+            // Remove dead enemies
+            enemies = enemies.filter(enemy => enemy.isAlive);
+            
+            // Draw player
+            player.draw();
+            
+            // Continue game loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Event listeners
+        startButton.addEventListener('click', startGame);
+
+        window.addEventListener('keydown', (e) => {
+            if (!gameRunning) return;
+            
+            switch (e.key) {
+                case 'ArrowLeft':
+                    player.velocityX = -player.speed;
+                    break;
+                case 'ArrowRight':
+                    player.velocityX = player.speed;
+                    break;
+                case 'ArrowUp':
+                case ' ':
+                    player.jump();
+                    break;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (!gameRunning) return;
+            
+            switch (e.key) {
+                case 'ArrowLeft':
+                case 'ArrowRight':
+                    if ((e.key === 'ArrowLeft' && player.velocityX < 0) || 
+                        (e.key === 'ArrowRight' && player.velocityX > 0)) {
+                        player.velocityX = 0;
+                    }
+                    break;
+            }
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    </script>
+</body>
+</html>
